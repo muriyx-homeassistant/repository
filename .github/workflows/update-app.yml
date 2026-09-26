@@ -1,0 +1,116 @@
+name: Update app
+
+on:
+  repository_dispatch:
+    types: [publish-app]
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Source repository, for example muriyx-homeassistant/app-grafana
+        required: true
+        type: string
+      source_sha:
+        description: Source commit SHA or tag
+        required: true
+        type: string
+      source_path:
+        description: App directory in source repository
+        required: true
+        default: grafana
+        type: string
+      slug:
+        description: Home Assistant app slug
+        required: true
+        type: string
+      version:
+        description: Version written to config.yaml
+        required: true
+        type: string
+      image:
+        description: Image without tag, for example ghcr.io/org/grafana/{arch}
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || inputs.source_repository }}
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha }}
+  SOURCE_PATH: ${{ github.event.client_payload.source_path || inputs.source_path }}
+  APP_SLUG: ${{ github.event.client_payload.slug || inputs.slug }}
+  APP_VERSION: ${{ github.event.client_payload.version || inputs.version }}
+  APP_IMAGE: ${{ github.event.client_payload.image || inputs.image }}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate request
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in SOURCE_REPOSITORY SOURCE_SHA SOURCE_PATH APP_SLUG APP_VERSION APP_IMAGE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required value: $name" >&2
+              exit 1
+            fi
+          done
+          if [[ "$SOURCE_PATH" = /* || "$SOURCE_PATH" == *".."* ]]; then
+            echo "Unsafe SOURCE_PATH: $SOURCE_PATH" >&2
+            exit 1
+          fi
+
+      - name: Checkout catalog
+        uses: actions/checkout@v7
+        with:
+          path: catalog
+          fetch-depth: 1
+
+      - name: Checkout app source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ env.SOURCE_SHA }}
+          path: source
+          persist-credentials: false
+
+      - name: Publish metadata and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd catalog
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Publish attempt ${attempt}/5"
+            git fetch origin "${GITHUB_REF_NAME}"
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+
+            python3 scripts/update_app.py \
+              --source "${GITHUB_WORKSPACE}/source/${SOURCE_PATH}" \
+              --catalog . \
+              --slug "$APP_SLUG" \
+              --version "$APP_VERSION" \
+              --image "$APP_IMAGE"
+
+            git add -- "$APP_SLUG"
+            if git diff --cached --quiet; then
+              echo "Catalog already contains ${APP_SLUG} ${APP_VERSION}."
+              exit 0
+            fi
+
+            git commit -m "Update ${APP_SLUG} to ${APP_VERSION}"
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+
+            echo "Catalog changed concurrently; retrying..."
+            sleep $((attempt * 2))
+          done
+
+          echo "Unable to update catalog after 5 attempts." >&2
+          exit 1
