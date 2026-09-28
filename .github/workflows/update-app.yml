@@ -74,6 +74,7 @@ jobs:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ env.SOURCE_SHA }}
           path: source
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Publish metadata and push
@@ -92,6 +93,7 @@ jobs:
 
             python3 scripts/update_app.py \
               --source "${GITHUB_WORKSPACE}/source/${SOURCE_PATH}" \
+              --source-repository "$SOURCE_REPOSITORY" \
               --catalog . \
               --slug "$APP_SLUG" \
               --version "$APP_VERSION" \
