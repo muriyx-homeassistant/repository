@@ -74,11 +74,13 @@ jobs:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ env.SOURCE_SHA }}
           path: source
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Publish metadata and push
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           cd catalog

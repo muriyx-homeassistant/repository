@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 FILES_TO_COPY = (
     "config.yaml",
     "README.md",
     "DOCS.md",
-    "CHANGELOG.md",
     "icon.png",
     "logo.png",
     "apparmor.txt",
@@ -61,9 +64,63 @@ def git_output(source: Path, *arguments: str) -> str:
     ).strip()
 
 
+def release_notes(repository: str, version: str) -> str:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "home-assistant-app-catalog",
+    }
+    if token := os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+
+    tags = (version,) if version.startswith("v") else (version, f"v{version}")
+    for tag in tags:
+        request = Request(
+            f"https://api.github.com/repos/{repository}/releases/tags/{quote(tag, safe='')}",
+            headers=headers,
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                release = json.load(response)
+        except HTTPError as error:
+            error.close()
+            if error.code == 404:
+                continue
+            raise SystemExit(f"Cannot fetch release {repository}@{tag}: {error}") from error
+        except (URLError, TimeoutError) as error:
+            raise SystemExit(f"Cannot fetch release {repository}@{tag}: {error}") from error
+
+        notes = (release.get("body") or "").strip()
+        return notes or (
+            f"[Release](https://github.com/{repository}/releases/tag/{quote(tag, safe='')})"
+        )
+
+    raise SystemExit(f"Cannot find release {repository} for version {version}")
+
+
+def markdown_headings(text: str) -> list[re.Match[str]]:
+    headings = []
+    fence = ""
+    for match in re.finditer(
+        r"(?m)^ {0,3}(?:(`{3,}|~{3,})([^\n]*)|(#{1,6})(?=[ \t]|$))", text
+    ):
+        if fence:
+            if (
+                match[1]
+                and match[1][0] == fence[0]
+                and len(match[1]) >= len(fence)
+                and not match[2].strip()
+            ):
+                fence = ""
+        elif match[1]:
+            fence = match[1]
+        else:
+            headings.append(match)
+    return headings
+
+
 def prepare_changelog(
     source: Path, destination: Path, repository: str, version: str
-) -> tuple[str, dict[str, str | None]]:
+) -> tuple[str, dict[str, str]]:
     state_path = destination / ".publication.json"
     previous = (
         json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
@@ -71,52 +128,36 @@ def prepare_changelog(
     if previous and previous["repository"] != repository:
         raise SystemExit("Cannot generate changelog: app source repository has changed")
 
-    sha = git_output(source, "rev-parse", "HEAD")
-    # Reuse the release's original base when retrying or republishing its version.
-    base_sha = (
-        previous.get("base_sha")
-        if previous.get("version") == version
-        else previous.get("sha")
-    )
     state = {
         "repository": repository,
         "version": version,
-        "sha": sha,
-        "base_sha": base_sha,
+        "sha": git_output(source, "rev-parse", "HEAD"),
     }
-
-    source_changelog = source / "CHANGELOG.md"
-    if source_changelog.is_file():
-        return source_changelog.read_text(encoding="utf-8"), state
+    notes = release_notes(repository, version).replace("\r\n", "\n")
+    # Nest release headings under the version without changing fenced code blocks.
+    for heading in reversed(markdown_headings(notes)):
+        notes = (
+            notes[:heading.start(3)]
+            + "#" * min(len(heading[3]) + 2, 6)
+            + notes[heading.end(3):]
+        )
 
     changelog_path = destination / "CHANGELOG.md"
     history = (
         changelog_path.read_text(encoding="utf-8") if changelog_path.is_file() else ""
     )
     history = re.sub(r"\A# [^\n]+\n*", "", history)
-    history = re.sub(
-        rf"(?ms)^## {re.escape(version)}\n.*?(?=^## |\Z)", "", history
-    ).strip()
+    boundaries = [0] + [
+        heading.start() for heading in markdown_headings(history) if heading[3] == "##"
+    ] + [len(history)]
+    sections = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        section = history[start:end]
+        if not section.startswith(f"## {version}\n"):
+            sections.append(section)
+    history = "".join(sections).strip()
 
-    revision = f"{base_sha}..{sha}" if base_sha else sha
-    commits = git_output(
-        source, "log", "--format=%H%x09%s", "--no-merges", revision, "--"
-    )
-    repository_url = f"https://github.com/{repository}"
-    entries = []
-    for commit in commits.splitlines():
-        commit_sha, subject = commit.split("\t", 1)
-        # Keep commit subjects as text even when they contain Markdown or HTML.
-        subject = re.sub(r"([\\`*_{}\[\]<>()!])", r"\\\1", subject)
-        entries.append(
-            f"- {subject} ([{commit_sha[:7]}]({repository_url}/commit/{commit_sha}))"
-        )
-    if not entries:
-        entries.append("- No new commits since the previous publication.")
-
-    changelog = f"# Changelog\n\n## {version}\n\n" + "\n".join(entries) + "\n"
-    if base_sha:
-        changelog += f"\n[Full changelog]({repository_url}/compare/{base_sha}...{sha})\n"
+    changelog = f"# Changelog\n\n## {version}\n\n{notes}\n"
     if history:
         changelog += "\n" + history + "\n"
     return changelog, state
