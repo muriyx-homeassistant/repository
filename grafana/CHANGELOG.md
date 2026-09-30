@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+#### What's Changed
+* ⬆️ Update VictoriaMetrics/victoriametrics-datasource to v0.26.1 by @renovate[bot] in https://github.com/muriyx-homeassistant/app-grafana/pull/5
+
+
+**Full Changelog**: https://github.com/muriyx-homeassistant/app-grafana/compare/v0.1.0...v0.1.1
+
 ## 0.1.0
 
 - ⬆️ Update App base image to v9.5.0 ([40b3e32](https://github.com/muriyx-homeassistant/app-grafana/commit/40b3e322758aad8d9320bb33d9f456f5b4c5525f))
