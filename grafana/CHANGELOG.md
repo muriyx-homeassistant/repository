@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+#### What's Changed
+* ⬆️ Update grafana/grafana to v13.2.3 by @renovate[bot] in https://github.com/muriyx-homeassistant/app-grafana/pull/4
+
+
+**Full Changelog**: https://github.com/muriyx-homeassistant/app-grafana/compare/v0.1.1...v0.2.1
+
 ## 0.1.1
 
 #### What's Changed
